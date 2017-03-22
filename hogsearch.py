@@ -55,7 +55,7 @@ def get_hog(feature_image, hog_channel = 'ALL', vis = False,
                        visualise = vis, feature_vector = feat_vec)
     return hog_features
 
-def get_features(name, ppc, cpb, orient, cspace = 'HLS'):
+def get_features(name, cspace = 'YCbCr'):
     """
     Get all features for one image file
     do all necessary transformations
@@ -75,12 +75,13 @@ def get_features(name, ppc, cpb, orient, cspace = 'HLS'):
                 feature_image = cv2.cvtColor(image, cv2.COLOR_BGR2HLS)
             elif cspace == 'YUV':
                 feature_image = cv2.cvtColor(image, cv2.COLOR_BGR2YUV)
+            elif cspace == 'YCbCr':
+                feature_image = cv2.cvtColor(image, cv2.COLOR_BGR2YCrCb )
     else: feature_image = np.copy(image)
         
     spatial_features = bin_spatial(feature_image, size=(16, 16))
     hist_features = color_hist(feature_image, nbins = 32)
-    hog_features = get_hog(feature_image, pix_per_cell = ppc, 
-                            cells_per_block = cpb, orientation = orient )
+    hog_features = get_hog(feature_image)
     return np.concatenate((spatial_features, hist_features, hog_features))
 
 def hog_check(ppc, cpb, orient):
@@ -157,7 +158,7 @@ def hog_check(ppc, cpb, orient):
     svc = LinearSVC()
     svc.fit(X_train, y_train)
     accuracy = svc.score(X_test, y_test)
-    return((ppc, cpb, orient, accuracy, X.shape[1]))
+    return((svc, ppc, cpb, orient, accuracy, X.shape[1]))
 
 result =[]
 bps = [4, 8, 12, 16]
@@ -167,7 +168,8 @@ hog_space = list(product(bps, cpb, orient))
 result = [(1, 2, 3, 4), (5, 6, 7, 8)]
 
 for i in tqdm(hog_space):
-    result.append(hog_check(i[0], i[1], i[2]))
+    _, ppc, cpb, orient, accuracy, size = hog_check(i[0], i[1], i[2])
+    result.append((ppc, cpb, orient, accuracy, size))
 
 with open('hog_space.csv', 'w') as csvfile:
     writer = csv.writer(csvfile)
