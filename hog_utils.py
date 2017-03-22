@@ -1,5 +1,6 @@
 import numpy as np
 import cv2
+from matplotlib import pyplot as plt
 from skimage.feature import hog
 import os
 from sklearn.preprocessing import StandardScaler
@@ -10,6 +11,7 @@ import time
 from itertools import product
 from tqdm import tqdm
 import csv
+import pickle
 
 
 def bin_spatial(img, size):
@@ -93,6 +95,12 @@ def get_features(name, ppc , cpb, orient, nbins, spat_size, cspace):
     return np.concatenate((spatial_features, hist_features, hog_features))
 
 def model_check(ppc, cpb, orient , nbins, spat_size, cspace):
+    """
+    Check a model - extract features, then train a classifier and calculate
+    its accuracy. Returns the classifier and scaler plus additional data like the size 
+    of features.
+    """
+
     vehicle_dirs = [('vehicles/GTI_Far', 'image0226.png'),
                 ('vehicles/GTI_Left', 'image0220.png'), 
                 ('vehicles/GTI_MiddleClose', 'image0125.png'),
@@ -186,8 +194,7 @@ class slider:
     Next window is moved by step from previous one (one value vor both x and y)
 
     """
-    def __init__(self, img, xlimits, ylimits, scaler, classifier,  
-                size = 64, step = 8, cspace = 'HLS', scale = 1):
+    def __init__(self, img, xlimits, ylimits, model, step = 8, scale = 1):
 
         if xlimits[0] is not None:
             self.min_x = xlimits[0]
@@ -209,14 +216,15 @@ class slider:
         else:
             self.max_y = img.shape[0]
         
-        self.size = size
+        self.size = 64
         self.step = step
+        self.model = model
                
-        self.image = convert_color(img, cspace)
+        self.image = convert_color(img, model['cspace'])
        
         # instances of scaler and clasiffier to deal with slide window data
-        self.scaler = scaler
-        self.classifier = classifier
+        self.scaler = model['scaler']
+        self.classifier = model['classifier']
         
         
         self.scale = scale
@@ -251,10 +259,13 @@ class slider:
         Features generator, returns features and top left corner of the sliding window
         """
         for x, y , window in self.slide():
-            spatial_features = bin_spatial(window, size=(16, 16))
-            hist_features = color_hist(window, nbins = 32)
+            spatial_features = bin_spatial(window, 
+                        size= self.model['spatial_size'])
+            hist_features = color_hist(window, nbins = self.model['nbins'])
             #h1 = self.hog_subsample(x, y)
-            h2 = get_hog(window)
+            h2 = get_hog(window, pix_per_cell = self.model['ppc'], 
+                                    cells_per_block = self.model['cpb'], 
+                                    orientation = self.model['orient'])
             hog_features = h2
             out = np.concatenate((spatial_features, hist_features, hog_features))
             out = out.reshape(1, -1)
@@ -274,6 +285,59 @@ class slider:
                 predictions.append((point1, point2))
         return(predictions)
 
+def add_heat(heatmap, bbox_list):
+    # Iterate through list of bboxes
+    for box in bbox_list:
+        # Add += 1 for all pixels inside each bbox
+        # Assuming each "box" takes the form ((x1, y1), (x2, y2))
+        heatmap[box[0][1]:box[1][1], box[0][0]:box[1][0]] += 1
+
+    # Return updated heatmap
+    return heatmap# Iterate through list of bboxes
+    
+def apply_threshold(heatmap, threshold):
+    # Zero out pixels below the threshold
+    heatmap[heatmap <= threshold] = 0
+    # Return thresholded map
+    return heatmap
+
+def draw_labeled_bboxes(img, labels):
+    # Iterate through all detected cars
+    for car_number in range(1, labels[1]+1):
+        # Find pixels with each car_number label value
+        nonzero = (labels[0] == car_number).nonzero()
+        # Identify x and y values of those pixels
+        nonzeroy = np.array(nonzero[0])
+        nonzerox = np.array(nonzero[1])
+        # Define a bounding box based on min/max x and y
+        bbox = ((np.min(nonzerox), np.min(nonzeroy)), (np.max(nonzerox), np.max(nonzeroy)))
+        # Draw the box on the image
+        cv2.rectangle(img, bbox[0], bbox[1], (0,0,255), 6)
+    # Return the image
+    return img
+
+def show2x1(im1, im2, caption1 = '', caption2 = '', color_map = 'jet'):
+    f, (ax1, ax2) = plt.subplots(1, 2, figsize=(24, 9))
+    f.tight_layout()
+    ax1.axis('off')
+    ax1.imshow(im1, cmap = color_map)
+    ax1.set_title(caption1, fontsize=25)
+    ax2.axis('off')
+    ax2.imshow(im2, cmap = color_map)
+    ax2.set_title(caption2, fontsize=25)
+
+def show3x1(im1, im2, im3, caption1 = '', caption2 = '', caption3 = '', color_map = 'jet'):
+    f, (ax1, ax2, ax3) = plt.subplots(1, 3, figsize=(24, 9))
+    f.tight_layout()
+    ax1.axis('off')
+    ax1.imshow(im1, cmap = color_map)
+    ax1.set_title(caption1, fontsize=25)
+    ax2.axis('off')
+    ax2.imshow(im2, cmap = color_map)
+    ax2.set_title(caption2, fontsize=25)
+    ax3.axis('off')
+    ax3.imshow(im3, cmap = color_map)
+    ax3.set_title(caption3, fontsize=25)
 
 if __name__ == "__main__":
     result =[]
@@ -281,19 +345,20 @@ if __name__ == "__main__":
     cpb = [2, 3, 4]
     orient = [6, 8, 9, 10, 12]
     cspace = ['HLS', 'YCbCr' ]
-    hog_space = list(product(bps, cpb, orient, cspace))
+
     results = []
+    hog_space = list(product(bps, cpb, orient, cspace))
 
     for i in tqdm(hog_space):
         check = model_check(ppc = i[0], cpb = i[1], orient = i[2], 
         nbins = 32, spat_size = 16, cspace = i[3])
-        pars = {'ppc': i[0], 'cpb': i[1], 'orient': i[2]}
+        pars = {'ppc': i[0], 'cpb': i[1], 'orient': i[2], 'cspace': i[3]}
         res = {**check, **pars}
         results.append(res)
     
     pickle.dump(results, open('search_results.p', 'wb'))
     with open('hog_space.csv', 'w') as csvfile:
         writer = csv.writer(csvfile)
-        for i in result:
-            line = [i['ppc'], i['cpb'], i['orient'], i['size'], i['accuracy']]
-            writer.writerow(result)
+        for i in results:
+            line = [i['ppc'], i['cpb'], i['orient'], i['size'], i['cspace'], i['accuracy']]
+            writer.writerow(line)
